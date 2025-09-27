@@ -1,0 +1,20 @@
+[package]
+name = "mapping-macro-test"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = [".", "mapping-macro"]
+
+[dependencies]
+mapping-macro = { path = "./mapping-macro" }
+uuid = { version = "1.0", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[[example]]
+name = "basic_usage"
+path = "examples/basic_usage.rs"
+
+[[example]]
+name = "advanced_usage"
+path = "examples/advanced_usage.rs"
