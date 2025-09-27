@@ -1,5 +1,6 @@
 [package]
 name = "mapping-macro-test"
+authors = ["Aleksandr Rassamagin <xsayler@gmail.com>"]
 version = "0.1.0"
 edition = "2021"
 
