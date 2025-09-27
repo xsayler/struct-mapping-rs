@@ -1,7 +1,94 @@
+//! # Mapping Macro
+//!
+//! A procedural macro for automatically generating `From` and `Into` trait implementations
+//! with flexible field mapping and transformation capabilities.
+//!
+//! ## Features
+//!
+//! - Automatic trait implementation generation
+//! - Custom field transformations with expressions
+//! - Field skipping for specific types
+//! - Multiple source and target type support
+//! - Default value assignment
+//!
+//! ## Usage
+//!
+//! ```rust
+//! use mapping_macro::Mapping;
+//!
+//! #[derive(Mapping)]
+//! #[from(CreateUserDto)]
+//! #[into(UserDto)]
+//! pub struct UserModel {
+//!     #[from(CreateUserDto | 42)]
+//!     id: i32,
+//!     name: String,
+//!     #[from(CreateUserDto | 1 as i32)]
+//!     version: i32,
+//! }
+//!
+//! pub struct UserDto {
+//!     id: i32,
+//!     name: String,
+//!     version: i32,
+//! }
+//!
+//! pub struct CreateUserDto {
+//!     name: String,
+//! }
+//! ```
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Expr, Fields, Path};
 
+/// Derives `From` and `Into` implementations for struct types with custom field mapping.
+///
+/// # Attributes
+///
+/// ## Struct-level attributes:
+/// - `#[from(SourceType)]` - Generate a `From<SourceType>` implementation
+/// - `#[into(TargetType)]` - Generate an `Into<TargetType>` implementation
+///
+/// ## Field-level attributes:
+/// - `#[from(SourceType | expression)]` - Use custom expression for field mapping
+/// - `#[into_skip(TargetType)]` - Skip field when converting to TargetType
+/// - `#[from_skip(SourceType)]` - Skip field when converting from SourceType
+///
+/// # Examples
+///
+/// ## Basic usage:
+/// ```
+/// # use mapping_macro::Mapping;
+/// #[derive(Mapping)]
+/// #[from(CreateDto)]
+/// #[into(ResponseDto)]
+/// struct Model {
+///     #[from(CreateDto | 42)]
+///     id: i32,
+///     name: String,
+/// }
+/// # struct CreateDto { name: String }
+/// # struct ResponseDto { id: i32, name: String }
+/// ```
+///
+/// ## Multiple types with field skipping:
+/// ```
+/// # use mapping_macro::Mapping;
+/// #[derive(Mapping)]
+/// #[from(CreateDto)]
+/// #[into(FullDto)]
+/// #[into(SummaryDto)]
+/// struct Model {
+///     id: i32,
+///     name: String,
+///     #[into_skip(SummaryDto)]
+///     internal_field: String,
+/// }
+/// # struct CreateDto { id: i32, name: String, internal_field: String }
+/// # struct FullDto { id: i32, name: String, internal_field: String }
+/// # struct SummaryDto { id: i32, name: String }
+/// ```
 #[proc_macro_derive(Mapping, attributes(from, into, from_skip, into_skip))]
 pub fn derive_mapping(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -176,4 +263,29 @@ fn path_to_string(path: &Path) -> String {
         .map(|segment| segment.ident.to_string())
         .collect::<Vec<_>>()
         .join("::")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    #[test]
+    fn test_paths_equal() {
+        let path1: Path = parse_quote!(MyStruct);
+        let path2: Path = parse_quote!(MyStruct);
+        let path3: Path = parse_quote!(OtherStruct);
+
+        assert!(paths_equal(&path1, &path2));
+        assert!(!paths_equal(&path1, &path3));
+    }
+
+    #[test]
+    fn test_path_to_string() {
+        let path1: Path = parse_quote!(MyStruct);
+        let path2: Path = parse_quote!(my_module::MyStruct);
+
+        assert_eq!(path_to_string(&path1), "MyStruct");
+        assert_eq!(path_to_string(&path2), "my_module::MyStruct");
+    }
 }
