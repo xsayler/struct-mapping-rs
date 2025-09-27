@@ -49,11 +49,16 @@ use syn::{parse_macro_input, Data, DeriveInput, Expr, Fields, Path};
 /// ## Struct-level attributes:
 /// - `#[from(SourceType)]` - Generate a `From<SourceType>` implementation
 /// - `#[into(TargetType)]` - Generate an `Into<TargetType>` implementation
+/// - `#[try_from(SourceType)]` - Generate a `TryFrom<SourceType>` implementation
+/// - `#[try_into(TargetType)]` - Generate a `TryInto<TargetType>` implementation
 ///
 /// ## Field-level attributes:
 /// - `#[from(SourceType | expression)]` - Use custom expression for field mapping
 /// - `#[into_skip(TargetType)]` - Skip field when converting to TargetType
 /// - `#[from_skip(SourceType)]` - Skip field when converting from SourceType
+/// - `#[try_from(SourceType | expression)]` - Use custom expression for fallible field mapping
+/// - `#[try_into_skip(TargetType)]` - Skip field when converting to TargetType with TryInto
+/// - `#[try_from_skip(SourceType)]` - Skip field when converting from SourceType with TryFrom
 ///
 /// # Examples
 ///
@@ -89,17 +94,48 @@ use syn::{parse_macro_input, Data, DeriveInput, Expr, Fields, Path};
 /// # struct FullDto { id: i32, name: String, internal_field: String }
 /// # struct SummaryDto { id: i32, name: String }
 /// ```
-#[proc_macro_derive(Mapping, attributes(from, into, from_skip, into_skip))]
+///
+/// ## Fallible conversions:
+/// ```
+/// # use mapping_macro::Mapping;
+/// #[derive(Mapping)]
+/// #[try_from(CreateDto)]
+/// #[try_into(ResponseDto)]
+/// struct Model {
+///     #[try_from(CreateDto | value.id.parse()?)]
+///     id: i32,
+///     name: String,
+/// }
+/// # struct CreateDto { id: String, name: String }
+/// # struct ResponseDto { id: i32, name: String }
+/// ```
+#[proc_macro_derive(
+    Mapping,
+    attributes(
+        from,
+        into,
+        try_from,
+        try_into,
+        from_skip,
+        into_skip,
+        try_from_skip,
+        try_into_skip
+    )
+)]
 pub fn derive_mapping(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     let struct_name = &input.ident;
     let mut from_impls = Vec::new();
     let mut into_impls = Vec::new();
+    let mut try_from_impls = Vec::new();
+    let mut try_into_impls = Vec::new();
 
     // Parse struct-level attributes
     let mut from_types = Vec::new();
     let mut into_types = Vec::new();
+    let mut try_from_types = Vec::new();
+    let mut try_into_types = Vec::new();
 
     for attr in &input.attrs {
         if attr.path().is_ident("from") {
@@ -115,6 +151,22 @@ pub fn derive_mapping(input: TokenStream) -> TokenStream {
                 for token in meta_list.tokens.clone() {
                     if let Ok(path) = syn::parse2::<Path>(token.into()) {
                         into_types.push(path);
+                    }
+                }
+            }
+        } else if attr.path().is_ident("try_from") {
+            if let Ok(meta_list) = attr.meta.require_list() {
+                for token in meta_list.tokens.clone() {
+                    if let Ok(path) = syn::parse2::<Path>(token.into()) {
+                        try_from_types.push(path);
+                    }
+                }
+            }
+        } else if attr.path().is_ident("try_into") {
+            if let Ok(meta_list) = attr.meta.require_list() {
+                for token in meta_list.tokens.clone() {
+                    if let Ok(path) = syn::parse2::<Path>(token.into()) {
+                        try_into_types.push(path);
                     }
                 }
             }
@@ -202,6 +254,80 @@ pub fn derive_mapping(input: TokenStream) -> TokenStream {
         from_impls.push(from_impl);
     }
 
+    // Generate TryFrom implementations
+    for try_from_type in &try_from_types {
+        let mut field_assignments = Vec::new();
+
+        for field in fields {
+            let field_name = field.ident.as_ref().unwrap();
+
+            // Check if field should be skipped for this try_from_type
+            let mut skip_field = false;
+            for attr in &field.attrs {
+                if attr.path().is_ident("try_from_skip") {
+                    if let Ok(meta_list) = attr.meta.require_list() {
+                        for token in meta_list.tokens.clone() {
+                            if let Ok(path) = syn::parse2::<Path>(token.into()) {
+                                if paths_equal(&path, try_from_type) {
+                                    skip_field = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if skip_field {
+                continue;
+            }
+
+            // Check for custom field mapping
+            let mut custom_expr = None;
+            for attr in &field.attrs {
+                if attr.path().is_ident("try_from") {
+                    if let Ok(meta_list) = attr.meta.require_list() {
+                        let tokens_str = meta_list.tokens.to_string();
+                        let try_from_type_str = path_to_string(try_from_type);
+
+                        if tokens_str.contains(&try_from_type_str) {
+                            // Parse the expression after the pipe
+                            let parts: Vec<&str> = tokens_str.split('|').collect();
+                            if parts.len() == 2 {
+                                let expr_str = parts[1].trim();
+                                if let Ok(expr) = syn::parse_str::<Expr>(expr_str) {
+                                    custom_expr = Some(expr);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let assignment = if let Some(expr) = custom_expr {
+                quote! { #field_name: #expr }
+            } else {
+                quote! { #field_name: value.#field_name }
+            };
+
+            field_assignments.push(assignment);
+        }
+
+        let try_from_impl = quote! {
+            impl TryFrom<#try_from_type> for #struct_name {
+                type Error = anyhow::Error;
+
+                fn try_from(value: #try_from_type) -> Result<Self, Self::Error> {
+                    Ok(Self {
+                        #(#field_assignments,)*
+                    })
+                }
+            }
+        };
+
+        try_from_impls.push(try_from_impl);
+    }
+
     // Generate Into implementations
     for into_type in &into_types {
         let mut field_assignments = Vec::new();
@@ -245,9 +371,56 @@ pub fn derive_mapping(input: TokenStream) -> TokenStream {
         into_impls.push(into_impl);
     }
 
+    // Generate TryInto implementations
+    for try_into_type in &try_into_types {
+        let mut field_assignments = Vec::new();
+
+        for field in fields {
+            let field_name = field.ident.as_ref().unwrap();
+
+            // Check if field should be skipped for this try_into_type
+            let mut skip_field = false;
+            for attr in &field.attrs {
+                if attr.path().is_ident("try_into_skip") {
+                    if let Ok(meta_list) = attr.meta.require_list() {
+                        for token in meta_list.tokens.clone() {
+                            if let Ok(path) = syn::parse2::<Path>(token.into()) {
+                                if paths_equal(&path, try_into_type) {
+                                    skip_field = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !skip_field {
+                let assignment = quote! { #field_name: self.#field_name };
+                field_assignments.push(assignment);
+            }
+        }
+
+        let try_into_impl = quote! {
+            impl TryInto<#try_into_type> for #struct_name {
+                type Error = anyhow::Error;
+
+                fn try_into(self) -> Result<#try_into_type, Self::Error> {
+                    Ok(#try_into_type {
+                        #(#field_assignments,)*
+                    })
+                }
+            }
+        };
+
+        try_into_impls.push(try_into_impl);
+    }
+
     let expanded = quote! {
         #(#from_impls)*
         #(#into_impls)*
+        #(#try_from_impls)*
+        #(#try_into_impls)*
     };
 
     TokenStream::from(expanded)

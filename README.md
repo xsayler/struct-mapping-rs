@@ -11,6 +11,7 @@ The `Mapping` macro allows you to automatically generate trait implementations f
 - **Multiple source and target types** - One struct can convert from/to many types
 - **Default value assignment** - Set defaults when fields don't exist in source
 - **Expression-based field mapping** - Full Rust expressions supported
+- **Fallible conversions** - TryFrom and TryInto with error handling using anyhow::Result
 
 This is particularly useful for domain model conversion, API layer mapping, and cross-crate compatibility where types can't implement each other's traits directly.
 
@@ -74,6 +75,8 @@ let user_dto: UserDto = user_model.into();     // Auto-generated
 
 - `#[from(SourceType)]` - Generate a `From<SourceType>` implementation
 - `#[into(TargetType)]` - Generate an `Into<TargetType>` implementation
+- `#[try_from(SourceType)]` - Generate a `TryFrom<SourceType>` implementation with `anyhow::Result`
+- `#[try_into(TargetType)]` - Generate a `TryInto<TargetType>` implementation with `anyhow::Result`
 
 Multiple types are supported:
 
@@ -93,6 +96,8 @@ pub struct Model {
 #### Custom Field Mapping
 
 Use `#[from(SourceType | expression)]` to provide custom values:
+
+For fallible conversions, use `#[try_from(SourceType | expression)]` where expression can return `Result`:
 
 ```rust
 #[derive(Mapping)]
@@ -116,6 +121,8 @@ pub struct UserModel {
 
 Use `#[into_skip(TargetType)]` or `#[from_skip(SourceType)]` to skip fields for specific types:
 
+For fallible conversions: `#[try_into_skip(TargetType)]` and `#[try_from_skip(SourceType)]`
+
 ```rust
 #[derive(Mapping)]
 #[from(CreateUserDto)]
@@ -134,6 +141,49 @@ pub struct UserModel {
 ```
 
 ## Advanced Examples
+
+### Fallible Conversions with TryFrom and TryInto
+
+```rust
+use anyhow::{anyhow, Result};
+use mapping_macro::Mapping;
+use std::convert::TryFrom;
+use uuid::Uuid;
+
+#[derive(Mapping)]
+#[try_from(CreateUserDto)]
+#[try_into(UserDto)]
+pub struct UserModel {
+    #[try_from(CreateUserDto | Uuid::parse_str(&value.id_str)?)]
+    id: Uuid,
+    
+    #[try_from(CreateUserDto | validate_name(value.name)?)]
+    name: String,
+    
+    #[try_from(CreateUserDto | value.age_str.parse::<i32>()?)]
+    #[try_into_skip(UserDto)]  // Skip age in response
+    age: i32,
+}
+
+fn validate_name(name: String) -> Result<String> {
+    if name.trim().is_empty() {
+        return Err(anyhow!("Name cannot be empty"));
+    }
+    Ok(name.trim().to_string())
+}
+
+// Usage
+let create_dto = CreateUserDto {
+    id_str: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+    name: "John Doe".to_string(),
+    age_str: "30".to_string(),
+};
+
+match UserModel::try_from(create_dto) {
+    Ok(user) => println!("Created user: {:?}", user),
+    Err(e) => println!("Validation failed: {}", e),
+}
+```
 
 ### Multiple Source Types with Different Logic
 
@@ -188,6 +238,7 @@ In field mapping expressions, you have access to:
 - Method calls: `value.price.unwrap_or(0.0)`
 - Literals: `1 as i32`, `"default".to_string()`
 - Pattern matching: `match value.status { "active" => 1, _ => 0 }`
+- **For TryFrom**: Expressions returning `Result<T, E>` with `?` operator
 
 Examples:
 
@@ -206,6 +257,42 @@ pub struct Model {
     
     #[from(SourceDto | match value.category.as_str() { "tech" => 1, "books" => 2, _ => 3 })]
     category_id: i32,
+    
+    // TryFrom examples with validation
+    #[try_from(SourceDto | value.score.parse::<f64>()?)]
+    score: f64,
+    
+    #[try_from(SourceDto | if value.count >= 0 { value.count } else { return Err(anyhow!("Count cannot be negative")); })]
+    count: i32,
+}
+```
+
+### TryFrom Generated Code
+
+For fallible conversions:
+
+```rust
+#[derive(Mapping)]
+#[try_from(CreateUserDto)]
+pub struct UserModel {
+    #[try_from(CreateUserDto | Uuid::parse_str(&value.id_str)?)]
+    id: Uuid,
+    name: String,
+}
+```
+
+The macro generates:
+
+```rust
+impl TryFrom<CreateUserDto> for UserModel {
+    type Error = anyhow::Error;
+
+    fn try_from(value: CreateUserDto) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: Uuid::parse_str(&value.id_str)?,
+            name: value.name,
+        })
+    }
 }
 ```
 
@@ -303,6 +390,9 @@ cargo test --all
 
 # Run just the main demo
 cargo run
+
+# Try fallible conversions example
+cargo run --example simple_try
 ```
 
 ## Limitations
@@ -316,6 +406,8 @@ cargo run
 4. **Struct Types Only**: The macro only works with structs that have named fields.
 
 5. **Proc Macro Context**: Some expressions might not work in all contexts due to Rust's procedural macro limitations.
+
+6. **TryFrom Error Type**: TryFrom implementations use `anyhow::Error` as the error type for maximum flexibility.
 
 ## License
 
@@ -340,11 +432,12 @@ The project includes comprehensive tests:
 - Doctests ensure documentation examples work
 
 ```bash
-# Run all tests
+# Run all tests (now includes TryFrom/TryInto tests)
 cargo test --all
 
 # Run specific test suites
 cargo test --lib                    # Library tests only
 cargo test -p mapping-macro         # Macro tests only
 cargo test --example basic_usage    # Example as test
+cargo test --example simple_try     # TryFrom example as test
 ```

@@ -283,4 +283,155 @@ mod tests {
         assert_eq!(full_dto.version, 1);
         assert_eq!(full_dto.status, Some("new".to_string()));
     }
+
+    // TryFrom and TryInto test structures
+    #[derive(Mapping, Debug, PartialEq, Clone)]
+    #[try_from(CreateTryUserDto)]
+    #[try_into(TryUserDto)]
+    pub struct TryUserModel {
+        #[try_from(CreateTryUserDto | uuid::Uuid::parse_str(&value.id_str)?)]
+        id: uuid::Uuid,
+        #[try_from(CreateTryUserDto | value.name)]
+        name: String,
+        #[try_from(CreateTryUserDto | value.age_str.parse::<i32>()?)]
+        age: i32,
+        #[try_from(CreateTryUserDto | if value.score >= 0.0 && value.score <= 100.0 { value.score } else { return Err(anyhow::anyhow!("Score must be between 0 and 100")); })]
+        #[try_into_skip(TryUserDto)]
+        score: f64,
+    }
+
+    #[derive(Debug, PartialEq, Clone)]
+    pub struct TryUserDto {
+        id: uuid::Uuid,
+        name: String,
+        age: i32,
+    }
+
+    #[derive(Debug, PartialEq, Clone)]
+    pub struct CreateTryUserDto {
+        id_str: String,
+        name: String,
+        age_str: String,
+        score: f64,
+    }
+
+    #[test]
+    fn test_try_from_success() {
+        use std::convert::TryFrom;
+
+        let create_dto = CreateTryUserDto {
+            id_str: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            name: "Alice".to_string(),
+            age_str: "30".to_string(),
+            score: 85.5,
+        };
+
+        let result = TryUserModel::try_from(create_dto);
+        assert!(result.is_ok());
+
+        let user_model = result.unwrap();
+        assert_eq!(
+            user_model.id,
+            uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()
+        );
+        assert_eq!(user_model.name, "Alice");
+        assert_eq!(user_model.age, 30);
+        assert_eq!(user_model.score, 85.5);
+    }
+
+    #[test]
+    fn test_try_from_failure_invalid_uuid() {
+        use std::convert::TryFrom;
+
+        let create_dto = CreateTryUserDto {
+            id_str: "invalid-uuid".to_string(),
+            name: "Bob".to_string(),
+            age_str: "25".to_string(),
+            score: 90.0,
+        };
+
+        let result = TryUserModel::try_from(create_dto);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_try_from_failure_invalid_age() {
+        use std::convert::TryFrom;
+
+        let create_dto = CreateTryUserDto {
+            id_str: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            name: "Charlie".to_string(),
+            age_str: "not_a_number".to_string(),
+            score: 75.0,
+        };
+
+        let result = TryUserModel::try_from(create_dto);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_try_from_failure_invalid_score() {
+        use std::convert::TryFrom;
+
+        let create_dto = CreateTryUserDto {
+            id_str: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            name: "David".to_string(),
+            age_str: "28".to_string(),
+            score: 150.0, // Invalid score > 100
+        };
+
+        let result = TryUserModel::try_from(create_dto);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Score must be between 0 and 100"));
+    }
+
+    #[test]
+    fn test_try_into_success() {
+        use std::convert::TryInto;
+
+        let user_model = TryUserModel {
+            id: uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
+            name: "Eve".to_string(),
+            age: 32,
+            score: 95.0,
+        };
+
+        let result: Result<TryUserDto, _> = user_model.try_into();
+        assert!(result.is_ok());
+
+        let user_dto = result.unwrap();
+        assert_eq!(
+            user_dto.id,
+            uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()
+        );
+        assert_eq!(user_dto.name, "Eve");
+        assert_eq!(user_dto.age, 32);
+        // Note: score field is skipped in TryUserDto
+    }
+
+    #[test]
+    fn test_try_round_trip_conversion() {
+        use std::convert::{TryFrom, TryInto};
+
+        let original_dto = CreateTryUserDto {
+            id_str: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            name: "Frank".to_string(),
+            age_str: "40".to_string(),
+            score: 88.0,
+        };
+
+        // CreateTryUserDto -> TryUserModel -> TryUserDto
+        let user_model = TryUserModel::try_from(original_dto.clone()).unwrap();
+        let user_dto: TryUserDto = user_model.try_into().unwrap();
+
+        assert_eq!(user_dto.name, original_dto.name);
+        assert_eq!(user_dto.age, original_dto.age_str.parse::<i32>().unwrap());
+        assert_eq!(
+            user_dto.id,
+            uuid::Uuid::parse_str(&original_dto.id_str).unwrap()
+        );
+    }
 }
